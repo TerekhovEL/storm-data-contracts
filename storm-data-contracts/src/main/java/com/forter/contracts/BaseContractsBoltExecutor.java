@@ -10,6 +10,9 @@ import backtype.storm.tuple.Fields;
 import backtype.storm.tuple.Tuple;
 import backtype.storm.utils.Utils;
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.MissingNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.forter.contracts.cache.CacheDAO;
 import com.forter.contracts.cache.CacheKeyFilter;
@@ -36,6 +39,7 @@ import static com.google.common.collect.Iterables.*;
  */
 public class BaseContractsBoltExecutor<TInput, TOutput, TContractsBolt extends IContractsBolt<TInput, TOutput>> extends BaseBasicBolt {
     private final TContractsBolt delegate;
+    private final ObjectMapper mapper = new ObjectMapper();
     private transient ContractFactory<TInput> inputFactory;
     private transient ContractsBoltReflector reflector;
     private transient TOutput defaultOutput;
@@ -210,17 +214,37 @@ public class BaseContractsBoltExecutor<TInput, TOutput, TContractsBolt extends I
      * Override this method for different merging/enrichment strategies
      */
     protected List<Object> enrichAttributes(List<Object> update, Tuple originalInput) {
-        Map<String, Object> finalAttributes = new HashMap<>();
-        finalAttributes.putAll((Map<String, Object>)originalInput.getValue(1));
-        for (Map.Entry<String, Object> updatedAttribute : ((Map<String, Object>)update.get(1)).entrySet()) {
-            if (updatedAttribute.getValue() != null || !finalAttributes.containsKey(updatedAttribute.getKey())) {
-                finalAttributes.put(updatedAttribute.getKey(), updatedAttribute.getValue());
+        final Object inputAttributes = originalInput.getValue(1);
+
+        if(inputAttributes instanceof Map) {
+            Map<String, Object> finalAttributes = new HashMap<>();
+
+            finalAttributes.putAll((Map<String, Object>) inputAttributes);
+            for (Map.Entry<String, Object> updatedAttribute : ((Map<String, Object>) update.get(1)).entrySet()) {
+                if (updatedAttribute.getValue() != null || !finalAttributes.containsKey(updatedAttribute.getKey())) {
+                    finalAttributes.put(updatedAttribute.getKey(), updatedAttribute.getValue());
+                }
             }
+
+            for (String field : outputFieldsToOmit) {
+                finalAttributes.put(field, null);
+            }
+
+            update.set(1, finalAttributes);
+
+        } else if(inputAttributes instanceof ObjectNode) {
+            ObjectNode finalAttributes = ((ObjectNode) inputAttributes).deepCopy();
+
+            for (Iterator<Map.Entry<String, JsonNode>> iterator = ((ObjectNode) update.get(1)).fields(); iterator.hasNext(); ) {
+                Map.Entry<String, JsonNode> updateAttribute = iterator.next();
+
+                if(!(updateAttribute.getValue() instanceof MissingNode) || !(finalAttributes.get(updateAttribute.getKey()) instanceof MissingNode)) {
+                    finalAttributes.set(updateAttribute.getKey(), updateAttribute.getValue());
+                }
+            }
+
+            update.set(1, finalAttributes);
         }
-        for (String field : outputFieldsToOmit) {
-            finalAttributes.put(field, null);
-        }
-        update.set(1, finalAttributes);
 
         return update;
     }
